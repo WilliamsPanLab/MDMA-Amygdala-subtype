@@ -1,0 +1,934 @@
+---
+title: "MDMA amygdala baseline stratification"
+author: "Xue Zhang"
+date: "10/25/2024"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+always_allow_html: yes
+---
+
+
+### load envionment and packages and subfunctions
+```{r setup, include=FALSE}
+# load all related packages
+pacman::p_load(pacman,here,knitr, rio, ggplot2, lme4, tidyverse, sjPlot, performance, see, broom.mixed, kableExtra, janitor, ggeffects, dplyr, gridExtra, qqplotr, emmeans, pbkrtest, knitr,ggpubr, here, table1, psych, broom,lsr, rstatix, formatR, RVAideMemoire, labelled, cowplot, readr, svglite, rmcorr, cowplot, grid, gtable, RColorBrewer, extrafont, corrplot, grDevices,icesTAF, gganimate, mice) 
+
+# load global options
+opts_chunk$set(echo = TRUE)
+
+# kable output
+options(kableExtra.auto_format = FALSE)
+
+# set up the contrast option for ANOVA
+options(contrasts = c("contr.sum","contr.poly"))
+
+# load functions for data manipulations
+#source(here('R', 'data_manipulation.R'))
+
+# load functions for data visualization
+add_theme <- function(myplot, xtitle_size, title_size, legend_title_size)
+{
+  myplot <- myplot + theme(axis.line = element_line(colour = 'black', size = 0.1),
+                           axis.ticks.length = unit(0.05, "cm"),
+                           axis.ticks = element_line(colour = "black", size = 0.1),
+                           axis.title.x = element_blank(),
+                           # axis.title.x = element_text(colour = "black",size = xtitle_size, family = "Arial"),
+                           plot.title = element_text(hjust=0.5, size = title_size, family = "Arial", face="bold", margin=margin(b = 0.01, unit = "inch")),
+                           axis.text.x = element_text(colour = "black",size = xtitle_size, family = "Arial"),
+                           axis.title.y=element_blank(),
+                           axis.text.y = element_text(colour = "black",size = title_size-1, family = "Arial"),
+                           strip.text.x = element_text(size = xtitle_size, colour = "black", family = "Arial"), strip.background = element_blank(),
+                           legend.text = element_text(size=legend_title_size, family = "Arial"),
+                           legend.background = element_rect(fill = "transparent"),
+                           panel.background = element_rect(fill = "transparent"),
+                           legend.title = element_text(size=legend_title_size, family = "Arial"))
+}
+
+# create folder, can work even if parent folder doesn't exist
+create_folder_subfolder <- function(folder)
+{
+  dir.create(folder, recursive = TRUE)
+  
+}
+```
+
+
+### Define Data Directory and Create Folders for Output Figures
+```{r define_folders}
+
+# Data folder path
+data_dir <- "/Users/xuezhang/Documents/Stanford/Projects/P50/Analysis/CSV"
+code_dir <- "/Users/xuezhang/Documents/Stanford/Projects/P50/Analysis/Scripts/R/P50_visualization_analysis"
+
+# Define and create figure directories
+figure_dir <- file.path(code_dir, "Figures_MDMA_amyg_stratification_PAPER")
+figure_subdirs <- c("TIFF", "PDF")
+figure_categories <- c("Boxplot")
+
+# Create subfolders within each main figure subdirectory
+for (subdir in figure_subdirs) {
+  for (category in figure_categories) {
+    target_dir <- file.path(figure_dir, subdir, category)
+    create_folder_subfolder(target_dir)
+  }
+}
+
+```
+
+### Define Parameters for Subjects, Dosage, and Plotting
+```{r define_parameters}
+# Subject information
+num_subjects <- 17  # Total number of subjects
+subject_list <- as.character(1:num_subjects)
+subject_labels <- 1:num_subjects
+
+# Dosage levels
+dosage_4sessions <- c("Baseline", "Placebo", "80mg", "120mg")
+dosage_3sessions <- c("Placebo", "80mg", "120mg")
+
+# Load and clean dosage data
+dosage_data <- import(file.path(data_dir, "MDMA_Dose_info_unblinded_10072021.xlsx")) %>%
+  select(-c("...6", "...7", "...8", "...9")) %>%
+  rename(s0 = "s00", s1 = "s01", s2 = "s02", s3 = "s03", Subjects = "ID") %>%
+  pivot_longer(-Subjects, names_to = "Visit", values_to = "Dosage") %>%
+  mutate(Dosage = gsub("baseline", "Baseline", Dosage),
+         Dosage = factor(Dosage, levels = dosage_4sessions)) %>%
+  filter(as.numeric(Subjects) <= num_subjects) %>%
+  mutate(Subjects = factor(Subjects, levels = subject_list)) %>%
+  arrange(as.numeric(Subjects)) %>%
+  filter(Subjects != 4)
+
+xtitle_size <- 4
+title_size <- 7
+legend_title_size <- 9
+x_label_size <- 7
+
+```
+
+
+
+# read redcap questionnaire, brain data, and webneuro data
+```{r read data}
+source(file.path(code_dir, 'R', 'MDMA_read_redcap_data_forupload.R'))
+source(file.path(code_dir, 'R', 'MDMA_read_biotype_forupload.R'))
+source(file.path(code_dir, 'R', 'MDMA_read_webneuro_data_forupload.R'))
+```
+
+### Stratify Subjects by Baseline Amygdala Activation - Median Split
+### Fig. 2b
+```{r fig.width=2,fig.height=2, fig.align='center',comment= NA, message=FALSE, tidy = TRUE, results='asis',warning=FALSE}
+# Read baseline amygdala activation data
+biotype_baseline <- biotype_all %>%
+  drop_na() %>%
+  filter(Dosage == 'Baseline') %>%
+  select(-Dosage) %>%
+  mutate(`act-nonconscious-threat_vs_neutral_Amygdala` = 
+           (`act-nonconscious-threat_vs_neutral-779062_Left_Amygdala` + 
+            `act-nonconscious-threat_vs_neutral-176064_Right_Amygdala`) / 2)
+
+# Define groups based on baseline amygdala activation
+variable <- 'act-nonconscious-threat_vs_neutral_Amygdala'
+group_df_all <- biotype_baseline %>%
+  pivot_longer(-Subjects, names_to = 'variables', values_to = 'value') %>%
+  filter(variables == variable) %>%
+  mutate(Group = ifelse(value >= median(value), 'high', 'low')) %>%
+  select(Subjects, Group, value, variables)
+
+# Clean the group variable for analysis
+group_df <- group_df_all %>%
+  filter(variables == variable) %>%
+  select(-value, -variables)
+
+# Save raw activation values as well
+values_dfs <- group_df_all %>%
+select(-Group) %>%
+pivot_wider(names_from = variables, values_from = value)
+
+# Check sample size and group statistics of amygdala activation
+summary_group_value <- group_df_all %>%
+  filter(variables == variable) %>%
+  group_by(Group) %>%
+  summarise(
+    avg = mean(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    n = n(),
+    se = sd / sqrt(n)
+  ) %>%
+  rename(value = avg) %>%
+  ungroup()
+
+# Plot baseline amygdala activation for high and low activation group: mean +/- se and scatter plot
+pd <- position_jitter(width = 0.1)
+colors_high_low <- c("#FF3705", "#F4B183")
+xlabel_text <- c("high", "low")
+
+ylim_max <- max(summary_group_value$value) + 1.1 * max(summary_group_value$se)
+ylim_min <- min(summary_group_value$value) - 1.1 * max(summary_group_value$se)
+
+# Create the ggplot with data points, error bars, and theme adjustments
+pd <- position_dodge(0.2)
+myplot <- summary_group_value %>%
+  ggplot(aes(x = Group, y = value)) +
+  geom_point(
+    aes(group = Group, color = Group),
+    position = pd,
+    data = group_df_all,
+    alpha = 0.5,
+    size = 0.2,
+    stroke = 0.3
+  ) +
+  geom_point(
+    aes(color = Group),
+    alpha = 1,
+    size = 1,
+    position = pd
+  ) +
+  geom_errorbar(
+    aes(color = Group, ymin = value - se, ymax = value + se),
+    width = 0,
+    size = 0.25,
+    position = pd
+  ) +
+  scale_colour_manual(values = colors_high_low) +
+  scale_fill_manual(values = colors_high_low) +
+  guides(color = guide_legend(override.aes = list(alpha = 1))) +
+  theme_classic() +
+  scale_x_discrete(breaks = waiver(), labels = xlabel_text) +
+  scale_y_continuous(
+    name = "",
+    limits = c(-2, 2),
+    breaks = c(-2, -1, 0, 1, 2),
+    expand = c(0, 0)
+  ) +
+  guides(
+    color = guide_legend(override.aes = list(alpha = 0.5)),
+    col = guide_legend(nrow = 1)
+  ) +
+  geom_hline(yintercept = 0, size = 0.1, linetype = "dashed", color = "grey") +
+  theme(legend.position = "off")
+
+# Apply additional theme settings
+myplot <- add_theme(myplot, xtitle_size, title_size, legend_title_size)
+
+
+# Save the plot as TIFF and PDF
+figure_width <- 0.8
+ggsave(filename = file.path(figure_dir, "TIFF/Boxplot/Baseline_PredictDrug_Experience", paste0(variable, "_Baseline_stratification_11042024.TIFF")),
+       plot = myplot, width = figure_width, height = 1, dpi = 1000)
+
+ggsave(filename = file.path(figure_dir, "PDF/Boxplot/Baseline_PredictDrug_Experience", paste0(variable, "_Baseline_stratification_11042024.PDF")),
+       device = cairo_pdf, plot = myplot, width = figure_width, height = 1, dpi = 300)
+myplot
+```
+
+
+### Read baseline demographics and symptoms, and report statistics by comparing high and low groups: 
+### Table 1
+```{r fig.width=12,fig.height=6, comment= NA, message=FALSE, tidy = TRUE}
+# Extract and clean demographic data
+demo_graphic <- questionnaire_data %>%
+  filter(Visit %in% c('screening', 's0')) %>%
+  select(
+    Subjects, Visit, redcap_repeat_instance, Age, Gender, 
+    educationscreen___1, educationscreen___2, educationscreen___3, 
+    educationscreen___4, educationscreen___5, educationscreen___6, 
+    ehi_handedness, Race, PHQ9, GAD7, pclc_total, ELS) %>%
+  group_by(Subjects) %>%
+  summarise_all(~ first(na.omit(.))) %>%
+  filter(Visit == 's0') %>%
+  select(-redcap_repeat_instance, -Visit)
+
+# Create education level variable
+education <- demo_graphic %>%
+  select(
+    Subjects, educationscreen___1, educationscreen___2, 
+    educationscreen___3, educationscreen___4, educationscreen___5, 
+    educationscreen___6
+  ) %>%
+  mutate(
+    Education = case_when(
+      educationscreen___6 == 1 ~ 6,
+      educationscreen___5 == 1 ~ 5,
+      educationscreen___4 == 1 ~ 4,
+      educationscreen___3 == 1 ~ 3,
+      educationscreen___2 == 1 ~ 2,
+      educationscreen___1 == 1 ~ 1,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  select(Subjects, Education)
+
+# Merge demographic data with group data and education levels
+demo_graphic <- Reduce(function(x, y) merge(x, y, by = "Subjects", all = TRUE), list(group_df, demo_graphic, education)) %>%
+  filter(!is.na(Group))
+
+# Prepare and reformat data for Table 1
+demo_graphic_table <- demo_graphic %>%
+  mutate(
+    Gender = factor(Gender, levels = c(0, 1), labels = c("Male", "Female")),
+    ehi_handedness = factor(ehi_handedness, levels = c(1, 2, 3), labels = c("Right", "Left", "Ambidextrous")),
+    Education = factor(Education, levels = 1:6, labels = c(
+      "Less than high school", "Completed high school", 
+      "Some college", "Two-year college", "4-year college", 
+      "More than 4-year college"
+    )),
+    Race = factor(Race, levels = 0:6, labels = c(
+      "American Indian/Alaska Native", "Asian", 
+      "Native Hawaiian or Other Pacific Islander", 
+      "Black or African American", "White", 
+      "More Than One Race", "Unknown / Not Reported"
+    ))
+  ) %>%
+  set_variable_labels(
+    PHQ9 = "9-item Patient Health Questionnaire", 
+    GAD7 = "7-Item Generalised Anxiety Disorder", 
+    ehi_handedness = "Handedness", 
+    ELS = "Early Life Stress Questionnaire",
+    pclc_total = "PTSD Checklist-Civilian Version"
+  )
+
+# Export the demographic data
+demo_graphic_table %>%
+  export(file = file.path(data_dir, "Demographic_Characterization_11042024.csv"))
+
+# Set units for Age
+units(demo_graphic_table$Age) <- "years"
+
+# Create baseline demographics table with p-values, running t test for continous variables and chisq test for categorical variables
+pvalue <- function(x, ...) {
+  y <- unlist(x)
+  g <- factor(rep(1:length(x), times = sapply(x, length)))
+  if (is.numeric(y)) {
+    p <- t.test(y ~ g)$p.value
+  } else {
+    contingency_table <- table(y, g)
+    contingency_table <- contingency_table[rowSums(contingency_table) > 0, ]
+    if (nrow(contingency_table) >= 2) {
+      p <- chisq.test(contingency_table)$p.value
+    } else {
+      p <- NA
+    }
+  }
+  c("", sub("<", "&lt;", format.pval(p, digits = 3, eps = 0.001)))
+}
+
+# Display table with high and low subgoups only, and report p-values comparing high vs low group
+table1(
+  ~ Age + Gender + Education + ehi_handedness + Race + PHQ9 + GAD7 + pclc_total + ELS | Group, 
+  data = demo_graphic_table, 
+  overall = FALSE, 
+  extra.col = list(`P-value` = pvalue)
+)
+
+# Display table with total sample alongside high and low subgroups
+table1(
+  ~ Age + Gender + Education + ehi_handedness + Race + PHQ9 + GAD7 + pclc_total + ELS | Group, 
+  data = demo_graphic_table, overall=c(left="Total"))
+
+```
+
+
+
+### Compare additional baseline behavioral and symptoms characteristics of high vs low groups and create visuals: 
+### Fig. 2c and Suppl. Fig 1a-1d
+```{r fig.width=2, fig.height=2, fig.align='center', comment=NA, message=FALSE, tidy=TRUE, results='asis', warning=FALSE}
+
+# Select behavioral and symptoms data and merge into non_brain_data_baseline
+webneuro_baseline <- webneuro_baseline %>%
+  select(Subjects, dgttrtAvN_norm)
+
+non_brain_data_baseline <- Reduce(function(x, y) merge(x, y, by = "Subjects", all=TRUE), list(webneuro_baseline, questionnaire_baseline)) %>%
+  arrange(Subjects)
+
+# Add group information
+non_brain_data_baseline_group <- Reduce(function(x, y) merge(x, y, by = "Subjects", all=TRUE), list(group_df, non_brain_data_baseline, values_dfs))
+
+# Reshape data for analysis
+non_brain_data_baseline_long <- non_brain_data_baseline_group %>%
+  pivot_longer(-c(Subjects, Group, Age, Gender), names_to = 'variables', values_to = 'value') %>%
+  drop_na() %>%
+  filter(grepl('GAD7|PHQ9|dgttrtAvN_norm|pcl|ELS|nonconscious', variables))
+
+# Conduct independent t-tests between high vs low groups
+ttest_table <- non_brain_data_baseline_long %>%
+  group_by(variables) %>%
+  t_test(value ~ Group, conf.level = 0.95, var.equal = TRUE, detailed = TRUE) %>%
+  add_significance(p.col="p", output.col="p.signif") %>%
+  arrange(variables) %>%
+  kbl(caption = "Baseline characteristics of high vs low reactivity groups: t-test") %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10)
+
+ttest_table
+
+# Calculate effect size (Cohen's d) for each comparison
+cohen_table <- non_brain_data_baseline_long %>%
+  group_by(variables) %>%
+  cohens_d(value ~ Group, var.equal = TRUE, paired = FALSE) %>%
+  arrange(variables) %>%
+  kbl(caption = "Baseline characteristics of high vs low reactivity groups: effect size") %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10)
+
+cohen_table
+
+# Plotting for each selected measure
+Selected_measure <- unique(non_brain_data_baseline_long$variables)
+plot_titles <- Selected_measure
+myplot_all <- list()
+xtitle_size <- 5
+title_size <- 6
+legend_title_size <- 3
+colors_high_low <- c("#FF3705", "#F4B183")
+xlabel_text <- c("high", "low")
+
+# Iterate over each selected measure for plotting
+for (imeasure in seq_along(Selected_measure)) {
+  
+  # Data for the current measure
+  data_fortest <- non_brain_data_baseline_long %>%
+    filter(variables == Selected_measure[imeasure]) %>%
+    drop_na()
+
+  # Summary statistics for the current measure
+  data_fortest_summary <- data_fortest %>%
+    group_by(Group) %>%
+    summarize(avg = mean(value), sd = sd(value), n = n(), se = sd / sqrt(n)) %>%
+    rename(value = avg) %>%
+    ungroup()
+  
+  # Set y-axis limits
+  ylim_max <- max(data_fortest_summary$value) + 1.1 * max(data_fortest_summary$se)
+  ylim_min <- min(data_fortest_summary$value) - 1.1 * max(data_fortest_summary$se)
+
+  # Plot for each measure
+  myplot <- ggplot(data_fortest_summary, aes(x = Group, y = value)) +
+    geom_point(aes(group = Group, color = Group), position = pd, data = data_fortest, alpha= 0.5, size = 0.2) +
+    geom_point(aes(color = Group), alpha = 1, size = 1, position = position_dodge(0.2)) +
+    geom_errorbar(aes(color = Group, ymin = value - se, ymax = value + se), width = 0, size = 0.25) +
+    scale_colour_manual(values = colors_high_low) +
+    theme_classic() + 
+    scale_x_discrete(labels = xlabel_text) +
+    scale_colour_manual(values = colors_high_low) +
+    theme(legend.position = "off") +
+    labs(y = plot_titles[imeasure])
+
+  # Conditional settings for the specific variable
+  if (plot_titles[imeasure] == 'dgttrtAvN_norm') {
+    myplot <- myplot +
+      geom_hline(yintercept = 0, size = 0.1, linetype = "dashed", color = "grey") +
+      scale_y_continuous(name = "", limits = c(-2, 2), breaks = c(-2, -1, 0, 1, 2), expand = c(0, 0)) +
+      scale_y_reverse()
+  }
+  print(myplot)
+  
+  # Save each plot
+  figure_width <- 0.8
+  ggsave(filename = file.path(figure_dir, "TIFF/Boxplot/Baseline_PredictDrug_Experience/Baseline", paste0(plot_titles[imeasure], "_bygroup_11042024.TIFF")), 
+         plot = myplot, width = figure_width, height = 1, dpi = 1000)
+  ggsave(filename = file.path(figure_dir, "PDF/Boxplot/Baseline_PredictDrug_Experience/Baseline", paste0(plot_titles[imeasure], "_bygroup_11042024.pdf")), 
+         device = cairo_pdf, plot = myplot, width = figure_width, height = 1, dpi = 300)
+}
+```
+
+
+
+### Compare MDMA-Induced Acute Effects Between High vs. Low Group under Placebo and 120mg MDMA, and creat visuals:
+### Fig. 3a-3h and Suppl. Fig. 2a-2h, Suppl. Table 1
+```{r fig.width=2,fig.height=2, fig.align='center',comment= NA, message=FALSE, tidy = TRUE, results='asis',warning=FALSE}
+# Define outcomes to be tested
+brain_variable <- biotype_all %>%
+  mutate(`act-nonconscious-threat_vs_neutral_Amygdala` = 
+           (`act-nonconscious-threat_vs_neutral-779062_Left_Amygdala` + 
+            `act-nonconscious-threat_vs_neutral-176064_Right_Amygdala`) / 2) %>%
+  select(Subjects, Dosage, 
+         "act-nonconscious-threat_vs_neutral-176064_Right_Amygdala",
+         "act-nonconscious-threat_vs_neutral-779062_Left_Amygdala",
+         "act-nonconscious-threat_vs_neutral-911981_Right_sgACC",
+         "ppi-nonconscious-threat_vs_neutral-911981_Right_sgACC-176064_Right_Amygdala",
+         "ppi-nonconscious-threat_vs_neutral-911981_Right_sgACC-779062_Left_Amygdala",
+         nonconscious_discarded_percent)
+
+# Select webneuro and questionnaire variables
+webneuro_variable <- webneuro_data_4session %>%
+  filter(Dosage != "Baseline") %>%
+  select(Subjects, Dosage, dgttrtAvN_norm)
+
+variables_select <- colnames(data_repeated_post_pre)[grepl('_post_pre', colnames(data_repeated_post_pre))]
+
+# Define VAS, DASC, and face likability measures
+vas_variable <- data_repeated_post_pre %>%
+  select(Subjects, Dosage, all_of(variables_select))
+
+dasc_variable <- data_once_pervisit_post_pre %>%
+  select(Subjects, Dosage, contains('dasc'))
+
+face_likability <- data_once_pervisit_post_pre %>%
+  select(Subjects, Dosage, contains('faces'))
+
+# Covariates (demographics)
+demo_covariate <- demo_graphic %>%
+  select(Subjects, Age, Gender)
+
+# Merge all outcome variables
+outcome <- Reduce(function(x, y) merge(x, y, by = c("Subjects", "Dosage"), all=TRUE), 
+                  list(brain_variable, webneuro_variable, dasc_variable, vas_variable, face_likability)) %>%
+  arrange(Subjects)
+
+# Merge outcomes with group and demographic information
+outcome_withgroup <- Reduce(function(x, y) merge(x, y, by = "Subjects", all = TRUE),
+                            list(group_df, demo_covariate, outcome)) %>%
+  arrange(Subjects) %>%
+  mutate(
+    Dosage = factor(Dosage, levels = dosage_3sessions),
+    Gender = as.factor(Gender)
+  ) %>%
+  drop_na(Dosage)
+
+# Check number of subjects in each group with Placebo and 120mg MDMA
+test_data <- outcome_withgroup %>%
+  filter(Dosage != '80mg') %>%
+  group_by(Subjects) %>%
+  summarise(N = n(), Group = unique(Group)) %>%
+  unique()
+
+test_data
+
+# Reshape data for analysis
+outcome_withgroup_longer <- outcome_withgroup %>%
+  pivot_longer(cols = -c(Subjects, Group, Age, Gender, Dosage, nonconscious_discarded_percent), names_to = 'variables', values_to = 'value') %>%
+  filter(grepl('nonconscious|Amyg|dgttrt|vas_|dasc|face', variables)) %>%
+  filter(Dosage != '80mg') %>%
+  drop_na()
+
+# Merge baseline amygdala values with outcome data
+outcome_withgroup_longer <- merge(values_dfs, outcome_withgroup_longer, by = "Subjects", all=TRUE)
+
+# Define variables of interest and create formula for mixed model analysis
+variable_interest <- unique(outcome_withgroup_longer$variables)[-5] # Exclude left amygdala as per your notes
+formula <- as.formula("value ~ Dosage*Group + Age + Gender + nonconscious_discarded_percent + (1|Subjects)")
+
+# Run ANOVA on each variable to assess Dosage*Group interaction
+anova_table <- outcome_withgroup_longer %>%
+  filter(variables %in% variable_interest) %>%
+  split(.$variables) %>%
+  map(~anova(lmer(formula, data = ., REML = FALSE), type = 'marginal')) %>%
+  tibble(
+    dvsub = names(.),
+    untidied = .
+  ) %>%
+  mutate(tidy = map(untidied, broom::tidy)) %>%
+  unnest(tidy) %>%
+  select(-untidied) %>%
+  add_significance() %>%
+  filter(term == 'Dosage:Group')
+
+# Display ANOVA results
+anova_table %>% 
+  kbl(caption = "ANOVA Marginal") %>%
+  kable_classic(full_width = F, html_font = "Arial", font_size = 10)
+
+# Fit LMM and perform pairwise comparisons for each variable
+results_list <- list()
+for (variable in variable_interest) {
+  
+  data_subset <- outcome_withgroup_longer %>% filter(variables == variable)
+  
+  # Fit linear mixed model
+  lmm <- lmer(formula, data = data_subset, REML = FALSE)
+  
+  # Calculate estimated marginal means and pairwise comparisons
+  emmeans_res <- emmeans(lmm, pairwise ~ Dosage | Group, adjust = "tukey")
+  
+  # Combine emmeans results with confidence intervals
+  emmeans_combined <- summary(emmeans_res$contrasts) %>%
+    left_join(confint(emmeans_res$contrasts) %>% 
+                select(contrast, Group, lower.CL, upper.CL), by = c("contrast", "Group")) %>%
+    mutate(`95% CI` = paste0("[", round(lower.CL, 2), ", ", round(upper.CL, 2), "]")) %>%
+    select(-lower.CL, -upper.CL) %>%
+    mutate(across(where(is.numeric), round, 2))
+  
+  results_list[[variable]] <- emmeans_combined
+}
+
+# Display pairwise comparison results
+final_results <- bind_rows(results_list, .id = "variable")
+final_results %>%
+  kbl(caption = "Post-hoc Beta Estimates") %>%
+  kable_classic(full_width = F, html_font = "Arial", font_size = 10)
+
+
+# Plotting MDMA-induced effects across placebo and 120mg conditions
+Selected_measure <- unique(outcome_withgroup_longer$variables)[-5]
+new_names <- c("act-noncon-threat_vs_neutral-R_Amy", "act-noncon-threat_vs_neutral-L_Amy", 
+               "act-noncon-threat_vs_neutral-R_sgACC", "ppi-noncon-threat_vs_neutral-R_sgACC-R_Amy", 
+               "dgttrtAvN_norm", "dascscore_impair", "dascscore_anxiety", "vas_bewithothers_post_pre",
+               "vas_secure_post_pre", "faces1_4" )
+xlabel_text <- c("pbo", "120")
+myplot_all <- NULL
+pd <- position_dodge(0.25)
+
+for (i in seq_along(Selected_measure)) {
+  
+  data_fortest <- outcome_withgroup_longer %>%
+    filter(variables == Selected_measure[i]) %>%
+    na.omit()
+  
+  # Summary stats for plotting
+  data_fortest_summary <- data_fortest %>%
+    group_by(Group, Dosage) %>%
+    summarise(avg = mean(value), sd = sd(value), n = n(), se = sd / sqrt(n)) %>%
+    ungroup()
+  
+  # Generate plot for each measure
+  myplot <- data_fortest_summary %>%
+    ggplot(aes(x = Dosage, y = avg)) +
+    geom_point(aes(color = Group), alpha = 1, size = 1) +
+    geom_line(aes(group = Group, color = Group), size = 0.25, alpha = 0.5) +
+    geom_errorbar(aes(ymin = avg - se, ymax = avg + se, color = Group), width = 0, size = 0.25) +
+    scale_colour_manual(values = colors_high_low) +
+    theme_classic() +
+    ylab(new_names[i]) +
+    scale_x_discrete(labels = xlabel_text) +
+    theme(legend.position = "off")
+  
+  myplot <- add_theme(myplot, xtitle_size, title_size, legend_title_size)
+  myplot_all[[i]] <- myplot
+}
+
+# Save plots as TIFF and PDF
+aligned <- cowplot::align_plots(myplot_all[[1]], myplot_all[[2]], myplot_all[[3]], 
+                                myplot_all[[4]], myplot_all[[5]], myplot_all[[6]], 
+                                myplot_all[[7]], myplot_all[[8]], myplot_all[[9]], 
+                                myplot_all[[10]], align = "hv", axis = "tblr", greedy = TRUE)
+
+for (i in seq_along(Selected_measure)) {
+  myplot <- aligned[[i]]
+  figure_width <- 0.9
+  ggsave(filename = file.path(figure_dir, "TIFF/Boxplot/Baseline_PredictDrug_Experience/Outcome", 
+                              paste0(new_names[i], "_bygroupdose_", Sys.Date(), ".TIFF")), 
+         plot = myplot, width = figure_width, height = 1, dpi = 1000)
+  ggsave(filename = file.path(figure_dir, "PDF/Boxplot/Baseline_PredictDrug_Experience/Outcome", 
+                              paste0(new_names[i], "_bygroup_", Sys.Date(), ".pdf")), 
+         device = cairo_pdf, plot = myplot, width = figure_width, height = 1, dpi = 300)
+}
+
+
+
+
+
+# Plotting MDMA-induced effects across placebo 80mg MDMA, and 120mg conditions
+# Reshape data for analysis
+outcome_withgroup_longer <- outcome_withgroup %>%
+  pivot_longer(cols = -c(Subjects, Group, Age, Gender, Dosage, nonconscious_discarded_percent), names_to = 'variables', values_to = 'value') %>%
+  filter(grepl('nonconscious|Amyg|dgttrt|vas_|dasc|face', variables)) %>%
+  drop_na()
+
+# Merge baseline amygdala values with outcome data
+outcome_withgroup_longer <- merge(values_dfs, outcome_withgroup_longer, by = "Subjects", all=TRUE)
+
+
+# Plotting MDMA-induced effects across placebo and 120mg conditions
+Selected_measure <- unique(outcome_withgroup_longer$variables)[-5]
+new_names <- c("act-noncon-threat_vs_neutral-R_Amy", "act-noncon-threat_vs_neutral-L_Amy", 
+               "act-noncon-threat_vs_neutral-R_sgACC", "ppi-noncon-threat_vs_neutral-R_sgACC-R_Amy", 
+               "dgttrtAvN_norm", "dascscore_impair", "dascscore_anxiety", "vas_bewithothers_post_pre",
+               "vas_secure_post_pre", "faces1_4" )
+xlabel_text <- c("pbo", "80", "120")
+myplot_all <- NULL
+pd <- position_dodge(0.25)
+
+for (i in seq_along(Selected_measure)) {
+  
+  data_fortest <- outcome_withgroup_longer %>%
+    filter(variables == Selected_measure[i]) %>%
+    na.omit()
+  
+  # Summary stats for plotting
+  data_fortest_summary <- data_fortest %>%
+    group_by(Group, Dosage) %>%
+    summarise(avg = mean(value), sd = sd(value), n = n(), se = sd / sqrt(n)) %>%
+    ungroup()
+  
+  # Generate plot for each measure
+  myplot <- data_fortest_summary %>%
+    ggplot(aes(x = Dosage, y = avg)) +
+    geom_point(aes(color = Group), alpha = 1, size = 1) +
+    geom_line(aes(group = Group, color = Group), size = 0.25, alpha = 0.5) +
+    geom_errorbar(aes(ymin = avg - se, ymax = avg + se, color = Group), width = 0, size = 0.25) +
+    scale_colour_manual(values = colors_high_low) +
+    theme_classic() +
+    ylab(new_names[i]) +
+    scale_x_discrete(labels = xlabel_text) +
+    theme(legend.position = "off")
+  
+  myplot <- add_theme(myplot, xtitle_size, title_size, legend_title_size)
+  myplot_all[[i]] <- myplot
+}
+
+# Save plots as TIFF and PDF
+aligned <- cowplot::align_plots(myplot_all[[1]], myplot_all[[2]], myplot_all[[3]], 
+                                myplot_all[[4]], myplot_all[[5]], myplot_all[[6]], 
+                                myplot_all[[7]], myplot_all[[8]], myplot_all[[9]], 
+                                myplot_all[[10]], align = "hv", axis = "tblr", greedy = TRUE)
+
+for (i in seq_along(Selected_measure)) {
+  myplot <- aligned[[i]]
+  figure_width <- 0.9
+  ggsave(filename = file.path(figure_dir, "TIFF/Boxplot/Baseline_PredictDrug_Experience/Outcome", 
+                              paste0(new_names[i], "_bygroupdose_alldrugc_", Sys.Date(), ".TIFF")), 
+         plot = myplot, width = figure_width, height = 1, dpi = 1000)
+  ggsave(filename = file.path(figure_dir, "PDF/Boxplot/Baseline_PredictDrug_Experience/Outcome", 
+                              paste0(new_names[i], "_bygroup_alldrugc_", Sys.Date(), ".pdf")), 
+         device = cairo_pdf, plot = myplot, width = figure_width, height = 1, dpi = 300)
+}
+
+
+```
+
+### Compare MDMA-Induced Effects Between High vs Low Group - Multiple Imputation Analysis:
+### Suppl. Table 2 and 3
+```{r fig.width=2,fig.height=2, fig.align='center',comment= NA, message=FALSE, tidy = TRUE, results='asis',warning=FALSE}
+# Step 1: Define outcomes to be tested (based on non-imputed code above)
+brain_variable <- biotype_all %>%
+  mutate(`act-nonconscious-threat_vs_neutral_Amygdala` = 
+           (`act-nonconscious-threat_vs_neutral-779062_Left_Amygdala` + 
+            `act-nonconscious-threat_vs_neutral-176064_Right_Amygdala`) / 2) %>%
+  select(Subjects, Dosage, 
+         "act-nonconscious-threat_vs_neutral-176064_Right_Amygdala",
+         "act-nonconscious-threat_vs_neutral-779062_Left_Amygdala",
+         "act-nonconscious-threat_vs_neutral-911981_Right_sgACC",
+         "ppi-nonconscious-threat_vs_neutral-911981_Right_sgACC-176064_Right_Amygdala",
+         "ppi-nonconscious-threat_vs_neutral-911981_Right_sgACC-779062_Left_Amygdala",
+         nonconscious_discarded_percent)
+
+# Select webneuro and questionnaire variables
+webneuro_variable <- webneuro_data_4session %>%
+  filter(Dosage != "Baseline") %>%
+  select(Subjects, Dosage, dgttrtAvN_norm)
+
+# Define VAS, DASC, and face likability measures
+variables_select <- colnames(data_repeated_post_pre)[grepl('_post_pre', colnames(data_repeated_post_pre))]
+
+vas_variable <- data_repeated_post_pre %>%
+  select(Subjects, Dosage, all_of(variables_select))
+
+dasc_variable <- data_once_pervisit_post_pre %>%
+  select(Subjects, Dosage, contains('dasc'))
+
+face_likability <- data_once_pervisit_post_pre %>%
+  select(Subjects, Dosage, contains('faces'))
+
+# Covariates (demographics)
+demo_covariate <- demo_graphic %>%
+  select(Subjects, Age, Gender)
+
+# Step 2: Combine all outcome variables (similar to non-imputed data approach)
+outcome <- Reduce(function(x, y) merge(x, y, by = c("Subjects", "Dosage"), all=TRUE), 
+                  list(brain_variable, webneuro_variable, dasc_variable, vas_variable, face_likability)) %>%
+    mutate(Dosage = recode(Dosage, "80mg" = "MDose", "120mg" = "HDose")) %>%
+  arrange(Subjects) %>%
+  mutate(Subjects = as.factor(Subjects))
+
+# Merge outcomes with group and demographic information
+outcome_withgroup <- Reduce(function(x, y) merge(x, y, by = "Subjects", all = TRUE),
+                            list(group_df, demo_covariate, outcome)) %>%
+  arrange(Subjects) %>%
+  mutate(Gender = as.factor(Gender),
+         Subjects = as.factor(Subjects)) %>%
+  drop_na(Dosage)
+
+# Step 3: Define variables to impute for analysis
+variables_to_impute <- c(
+  "act-nonconscious-threat_vs_neutral-176064_Right_Amygdala",
+  "act-nonconscious-threat_vs_neutral-911981_Right_sgACC",
+  "ppi-nonconscious-threat_vs_neutral-911981_Right_sgACC-176064_Right_Amygdala"
+)
+
+# Initialize list to store results for each variable
+results_list <- list()  
+change_values_list <- list()
+
+for (col in variables_to_impute) {
+  
+  # Prepare data for imputation
+  data_forimpute_wide <- outcome_withgroup %>%
+    select(Subjects, Group, Age, Gender, Dosage, all_of(col)) %>%
+    pivot_wider(names_from = Dosage, values_from = all_of(col))
+  
+  # Initialize imputation without including Group as predictor
+  micelong0 <- mice(data_forimpute_wide, maxit = 0)
+  meth_micelong <- micelong0$method
+  pred_micelong <- micelong0$predictorMatrix
+  pred_micelong["Group", ] <- 0  # Exclude Group from being a predictor to avoid circularity
+  pred_micelong["Age", ] <- 0
+  pred_micelong["Gender", ] <- 0
+  pred_micelong[, "Age"] <- 0
+  pred_micelong[,"Gender"] <- 0
+  pred_micelong["Subjects",] <- 0
+  
+  # Run multiple imputation
+  imputed_data <- mice(data_forimpute_wide, meth = meth_micelong, pred = pred_micelong, maxit = 100, seed = 2019, printFlag = FALSE)
+  
+  # Fit linear mixed model on imputed data
+  mods <- with(imputed_data, {
+    dat_long <- pivot_longer(data_forimpute_wide, cols = -c(Subjects, Group, Age, Gender), names_to = 'Dosage', values_to = 'var') %>%
+      merge(., outcome[, c("Subjects", "Dosage", "nonconscious_discarded_percent")], by = c("Subjects", "Dosage")) %>%
+      filter(Dosage != 'Baseline' & Dosage != 'MDose')
+    lmer('var ~ Dosage * Group +   Age + Gender + nonconscious_discarded_percent + (1 | Subjects)', data = dat_long, REML = FALSE)
+  })
+
+
+  # Pool and summarize results from imputed data
+  pooled_results <- mice::pool(mods)
+  fixed_effects_imputed <- summary(pooled_results, conf.int = TRUE) %>%
+    mutate(Source = "Imputed", Variable = col) %>%
+    filter(term == "Dosage1:Group1") %>%
+    mutate(F_value = statistic^2) %>%
+    mutate(
+      `95% CI` = paste0("[", round(`2.5 %`, 2), ", ", round(`97.5 %`, 2), "]"),
+      Variable = col
+    ) %>%
+    select(Variable, term, estimate, std.error, statistic, df, p.value, F_value, `95% CI`, Source)
+  
+  # Fit model on non-imputed data
+  dat_long_no_impute <- pivot_longer(data_forimpute_wide, cols = -c(Subjects, Group, Age, Gender), names_to = 'Dosage', values_to = 'var') %>%
+    merge(., outcome[, c("Subjects", "Dosage", "nonconscious_discarded_percent")], by = c("Subjects", "Dosage")) %>%
+      filter(Dosage != 'Baseline' & Dosage != 'MDose')
+
+
+  model_no_impute <- lmer('var ~ Dosage * Group + Age + Gender + nonconscious_discarded_percent + (1 | Subjects)', data = dat_long_no_impute, REML = FALSE)
+  
+  fixed_effects_no_impute <- broom.mixed::tidy(model_no_impute, effects = "fixed", conf.int = TRUE) %>%
+    filter(term == "Dosage1:Group1") %>%
+    mutate(F_value = statistic^2) %>%
+    mutate(
+      Source = "Non-imputed",
+      `95% CI` = paste0("[", round(conf.low, 2), ", ", round(conf.high, 2), "]"),
+      Variable = col
+    ) %>%
+    select(Variable, term, estimate, std.error, statistic, df, p.value, F_value, `95% CI`, Source)
+  
+  # Combine imputed and non-imputed results
+  combined_results <- bind_rows(fixed_effects_no_impute, fixed_effects_imputed)
+  results_list[[col]] <- combined_results
+  
+  
+  # Calculate 120mg (HDose) minus placebo change for each imputed dataset
+  change_results <- lapply(1:imputed_data$m, function(i) {
+    imputed_data_complete <- complete(imputed_data, i)
+    imputed_data_complete %>%
+      mutate(change = HDose - Placebo) %>%  # Calculate 120mg - Placebo for the variable
+      select(Subjects, Group, change) %>%
+      rename(!!col := change)  # Rename column to indicate the variable
+  })
+  
+  # Calculate the average change across imputations
+  pooled_change <- bind_rows(change_results) %>%
+    group_by(Subjects, Group) %>%
+    summarize(across(everything(), mean, na.rm = TRUE), .groups = 'drop')
+  
+  # Store the results in change_values_list
+  change_values_list[[col]] <- pooled_change
+}
+
+# Combine imputed and non-imputed results into a single data frame for viewing
+final_results <- bind_rows(results_list) %>%
+  mutate(across(c(estimate, std.error, statistic, df, p.value, F_value), round, 2))
+
+# Display final results in table
+final_results %>%
+  kbl(caption = "Summary of statistical results with and without imputation") %>%
+  kable_classic(full_width = F, html_font = "Arial", font_size = 10)
+
+# Combine all (120mg - Placebo) change values into a single data frame for viewing
+pooled_change_summary <- reduce(change_values_list, full_join, by = c("Subjects", "Group")) %>%
+  arrange(as.numeric(Subjects))
+
+# combine with non-brain (120mg - Placebo) change
+change_from_placebo_to_120mg_long <- outcome_withgroup %>%
+  filter(Dosage %in% c("Placebo", "HDose")) %>%
+  select(Subjects, Group, Dosage, dgttrtAvN_norm, dascscore_impair, dascscore_anxiety, vas_bewithothers_post_pre, vas_secure_post_pre, faces1_4) %>%
+  pivot_longer(cols = -c(Subjects, Group, Dosage), names_to = 'variables', values_to = 'value') %>%
+  pivot_wider(names_from = Dosage, values_from = value) %>%
+  mutate(change = `HDose` - Placebo) %>% # Calculate the change from Placebo to 120mg for each variable
+  select(Subjects, Group, variables, change) %>%
+  pivot_wider(names_from = variables, values_from = change, names_glue = "{variables}_change")
+
+pooled_change_summary_all <- merge(pooled_change_summary, change_from_placebo_to_120mg_long, by = c("Subjects",'Group'), all = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(., 2))) %>%
+  arrange(as.numeric(Subjects))
+
+# Display final change table in a clean format
+pooled_change_summary_all %>%
+  kbl(caption = "120mg minus Placebo Change for Each Participant Across Imputations") %>%
+  kable_classic(full_width = F, html_font = "Arial", font_size = 10)
+
+```
+
+
+### calculate guess accuracies, including in high and low groups
+### Suppl. Table 4
+```{r fig.width=2,fig.height=2, fig.align='center',comment= NA, message=FALSE, tidy = TRUE, results='asis',warning=FALSE}
+# Calculate accuracy of guesses for each type (CRC, Participant, MD)
+correct_guess <- dosage_guesses %>%
+  mutate(correct_CRC = case_when(CRC_guess == Dosage ~ 1, is.na(CRC_guess) ~ NA, TRUE ~ 0),
+         correct_Participant = case_when(Participant_guess == Dosage ~ 1, is.na(Participant_guess) ~ NA, TRUE ~ 0),
+         correct_MD = case_when(MD_guess == Dosage ~ 1, is.na(MD_guess) ~ NA, TRUE ~ 0))
+
+# Summarize correct guesses by subject
+summary_guess_subject <- correct_guess %>%
+  group_by(Subjects) %>%
+  summarise(correct_CRC_total = sum(correct_CRC, na.rm = TRUE),
+            correct_Participant_total = sum(correct_Participant, na.rm = TRUE),
+            correct_MD_total = sum(correct_MD, na.rm = TRUE),
+            correct_CRC_percent = 100*correct_CRC_total/sum(!is.na(correct_CRC)),
+            correct_Participant_percent = 100*correct_Participant_total/sum(!is.na(correct_Participant)),
+            correct_MD_percent = 100*correct_MD_total/sum(!is.na(correct_MD)))
+
+# Calculate average correct guess percentages across all subjects
+summary_guess_average <- correct_guess %>%
+  summarise(correct_CRC_total = sum(correct_CRC, na.rm = TRUE),
+            correct_Participant_total = sum(correct_Participant, na.rm = TRUE),
+            correct_MD_total = sum(correct_MD, na.rm = TRUE),
+            correct_CRC_percent = 100*correct_CRC_total/sum(!is.na(correct_CRC)),
+            correct_Participant_percent = 100*correct_Participant_total/sum(!is.na(correct_Participant)),
+            correct_MD_percent = 100*correct_MD_total/sum(!is.na(correct_MD)))
+
+# Calculate average correct guess percentages by dose
+summary_guess_average_bydose <- correct_guess %>%
+  group_by(Dosage) %>%
+  summarise(correct_CRC_total = sum(correct_CRC, na.rm = TRUE),
+            correct_Participant_total = sum(correct_Participant, na.rm = TRUE),
+            correct_MD_total = sum(correct_MD, na.rm = TRUE),
+            correct_CRC_percent = 100*correct_CRC_total/sum(!is.na(correct_CRC)),
+            correct_Participant_percent = 100*correct_Participant_total/sum(!is.na(correct_Participant)),
+            correct_MD_percent = 100*correct_MD_total/sum(!is.na(correct_MD)))
+
+summary_guess_average_bydose %>%
+  select(Dosage, correct_Participant_percent, correct_MD_percent, correct_CRC_percent) %>%
+  t() %>%
+kbl(caption = "Accurary of dosage identification across different conditions") %>%
+kable_classic(full_width = F, html_font = "Arial", font_size = 10)
+
+
+# Merge group information with correct guesses data
+correct_guess_group <- Reduce(function(x, y) merge(x, y, by = c("Subjects"), all=TRUE), list(group_df,correct_guess))
+
+# Calculate average correct guess percentages by dose and group
+summary_guess_average_bydose_bygroup <- correct_guess_group %>%
+  group_by(Dosage, Group) %>%
+  summarise(correct_CRC_total = sum(correct_CRC, na.rm = TRUE),
+            correct_Participant_total = sum(correct_Participant, na.rm = TRUE),
+            correct_MD_total = sum(correct_MD, na.rm = TRUE),
+            correct_CRC_percent = 100*correct_CRC_total/sum(!is.na(correct_CRC)),
+            correct_Participant_percent = 100*correct_Participant_total/sum(!is.na(correct_Participant)),
+            correct_MD_percent = 100*correct_MD_total/sum(!is.na(correct_MD)))
+
+summary_guess_average_bydose_bygroup %>%
+  select(Dosage, Group, correct_Participant_percent) %>%
+  t() %>%
+  kbl(caption = "Accurary of dosage identification across different conditions in high and low groups") %>%
+  kable_classic(full_width = F, html_font = "Arial", font_size = 10)
+
+```
